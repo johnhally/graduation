@@ -94,7 +94,7 @@ class AgenticMemorySystem:
                  model_name: str = 'all-MiniLM-L6-v2',
                  llm_backend: str = "openai",
                  llm_model: str = "gpt-4o-mini",
-                 evo_threshold: int = 100,
+                 evo_threshold: int = 20, #100,
                  api_key: Optional[str] = None):  
         """Initialize the memory system.
         
@@ -123,7 +123,7 @@ class AgenticMemorySystem:
         self.evo_cnt = 0
         self.evo_threshold = evo_threshold
 
-        # Evolution system prompt
+        # Evolution system prompt 这是让LLM判断是否进行演化记忆的提示词
         self._evolution_system_prompt = '''
                                 You are an AI memory evolution agent responsible for managing and evolving a knowledge base.
                                 Analyze the the new memory note according to keywords and context, also with their several nearest neighbors memory.
@@ -232,12 +232,29 @@ class AgenticMemorySystem:
 
     def add_note(self, content: str, time: str = None, **kwargs) -> str:
         """Add a new memory note"""
+
+        # --- 新增代码开始：如果缺少标签或关键词，先强制分析内容 ---
+        # 即使是第一条记忆，这里也会执行，从而生成 Tags 和 Keywords，即补全内容。
+        if not kwargs.get('keywords') or not kwargs.get('tags'):
+            # 调用 analyze_content (需确保该函数在类中已定义且能正常工作)
+            print(f"Generating metadata for: {content[:30]}...")  # 调试打印
+            analysis = self.analyze_content(content)
+
+            if not kwargs.get('keywords'):
+                kwargs['keywords'] = analysis.get('keywords', [])
+            if not kwargs.get('tags'):
+                kwargs['tags'] = analysis.get('tags', [])
+            if not kwargs.get('context') or kwargs.get('context') == "General":
+                kwargs['context'] = analysis.get('context', "General")
+
+        # --- 新增代码结束 ---
+
         # Create MemoryNote without llm_controller
         if time is not None:
             kwargs['timestamp'] = time
         note = MemoryNote(content=content, **kwargs)
         
-        # Update retriever with all documents
+        # Update retriever with all documents ，返回是否演化的决定，以及记忆节点。
         evo_label, note = self.process_memory(note)
         self.memories[note.id] = note
         
@@ -256,7 +273,8 @@ class AgenticMemorySystem:
             "tags": note.tags
         }
         self.retriever.add_document(note.content, metadata, note.id)
-        
+
+        #演化一定次数以后，便进行维护与重组
         if evo_label == True:
             self.evo_cnt += 1
             if self.evo_cnt % self.evo_threshold == 0:
@@ -296,6 +314,7 @@ class AgenticMemorySystem:
             
             # Convert to list of memories
             memory_str = ""
+            #😀 原版：
             indices = []
             
             if 'ids' in results and results['ids'] and len(results['ids']) > 0 and len(results['ids'][0]) > 0:
@@ -306,8 +325,23 @@ class AgenticMemorySystem:
                         # Format memory string
                         memory_str += f"memory index:{i}\ttalk start time:{metadata.get('timestamp', '')}\tmemory content: {metadata.get('content', '')}\tmemory context: {metadata.get('context', '')}\tmemory keywords: {str(metadata.get('keywords', []))}\tmemory tags: {str(metadata.get('tags', []))}\n"
                         indices.append(i)
-                    
+
             return memory_str, indices
+
+            # 😀修改版本：还不确定，先插个眼，之后回来比对。相应的process_memory也改，不过我还没改，到时候看Gemini再改吧，且看看是不是真要改
+            # found_ids = []  # 改名，存储 ID
+            #
+            # if 'ids' in results and results['ids'] and len(results['ids']) > 0 and len(results['ids'][0]) > 0:
+            #     for i, doc_id in enumerate(results['ids'][0]):
+            #         # Get metadata from ChromaDB results
+            #         if i < len(results['metadatas'][0]):
+            #             metadata = results['metadatas'][0][i]
+            #             # Format memory string
+            #             memory_str += f"memory index:{i}\ttalk start time:{metadata.get('timestamp', '')}\tmemory content: {metadata.get('content', '')}\tmemory context: {metadata.get('context', '')}\tmemory keywords: {str(metadata.get('keywords', []))}\tmemory tags: {str(metadata.get('tags', []))}\n"
+            #             found_ids.append(doc_id)
+            #
+            # return memory_str, found_ids
+
         except Exception as e:
             logger.error(f"Error in find_related_memories: {str(e)}")
             return "", []
@@ -355,7 +389,7 @@ class AgenticMemorySystem:
         return self.memories.get(memory_id)
     
     def update(self, memory_id: str, **kwargs) -> bool:
-        """Update a memory note.
+        """Update a memory note. 将记忆进行更新，将向量库之前的记忆删除，将更新后的记忆添加到向量库中
         
         Args:
             memory_id: ID of memory to update
@@ -435,7 +469,8 @@ class AgenticMemorySystem:
         search_results = self.retriever.search(query, k)
         memories = []
         
-        # Process ChromaDB results
+        # Process ChromaDB results ，其实search_results保存的就是结果了，只不过其是将不同对象的数据存储在一起
+        # 所以这段代码做的工作就是，将搜索到的数据的id提出来，然后根据id在self.memories中找出来，然后把同一对象的存储数据合并在一起，并返回前k个。
         for i, doc_id in enumerate(search_results['ids'][0]):
             memory = self.memories.get(doc_id)
             if memory:
@@ -444,6 +479,7 @@ class AgenticMemorySystem:
                     'content': memory.content,
                     'context': memory.context,
                     'keywords': memory.keywords,
+                    'tags': memory.tags,  # ✅ 添加这一行
                     'score': search_results['distances'][0][i]
                 })
         
@@ -608,7 +644,7 @@ class AgenticMemorySystem:
                 
             # Format neighbors for LLM - in this case, neighbors_text is already formatted
             
-            # Query LLM for evolution decision
+            # Query LLM for evolution decision 进行的是将对应数据填写到提示词模板。
             prompt = self._evolution_system_prompt.format(
                 content=note.content,
                 context=note.context,
@@ -617,7 +653,7 @@ class AgenticMemorySystem:
                 neighbor_number=len(indices)
             )
             
-            try:
+            try: #llm.get_completion 是真正进行LLM的调用，并将生成的内容严格按response_format回复，将生成内容存储在response中
                 response = self.llm_controller.llm.get_completion(
                     prompt,
                     response_format={"type": "json_schema", "json_schema": {
@@ -669,19 +705,19 @@ class AgenticMemorySystem:
                         "strict": True
                     }}
                 )
-                
+                # 解析提取LLM回答的内容
                 response_json = json.loads(response)
                 should_evolve = response_json["should_evolve"]
                 
                 if should_evolve:
-                    actions = response_json["actions"]
-                    for action in actions:
+                    actions = response_json["actions"] #
+                    for action in actions: # 为新笔记添加关联链接，优化标签
                         if action == "strengthen":
                             suggest_connections = response_json["suggested_connections"]
                             new_tags = response_json["tags_to_update"]
                             note.links.extend(suggest_connections)
                             note.tags = new_tags
-                        elif action == "update_neighbor":
+                        elif action == "update_neighbor": #获取 AI 对邻居生成的新上下文和新标签
                             new_context_neighborhood = response_json["new_context_neighborhood"]
                             new_tags_neighborhood = response_json["new_tags_neighborhood"]
                             noteslist = list(self.memories.values())
