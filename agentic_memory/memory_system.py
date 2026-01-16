@@ -3,9 +3,10 @@ from typing import List, Dict, Optional, Any, Tuple
 import uuid
 from datetime import datetime
 from .llm_controller import LLMController
-from .retrievers import ChromaRetriever
+from .retrievers import ChromaRetriever,PersistentChromaRetriever
 import json
 import logging
+import ast
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 import numpy as np
@@ -95,7 +96,9 @@ class AgenticMemorySystem:
                  llm_backend: str = "openai",
                  llm_model: str = "gpt-4o-mini",
                  evo_threshold: int = 20, #100,
-                 api_key: Optional[str] = None):  
+                 api_key: Optional[str] = None,
+                 # 😀新增参数：指定存储路径
+                 db_path: str = "./chroma_db"):
         """Initialize the memory system.
         
         Args:
@@ -107,16 +110,27 @@ class AgenticMemorySystem:
         """
         self.memories = {}
         self.model_name = model_name
-        # Initialize ChromaDB retriever with empty collection
-        try:
-            # First try to reset the collection if it exists
-            temp_retriever = ChromaRetriever(collection_name="memories",model_name=self.model_name)
-            temp_retriever.client.reset()
-        except Exception as e:
-            logger.warning(f"Could not reset ChromaDB collection: {e}")
+        self.db_path = db_path  # 保存路径
+
+        # Initialize ChromaDB retriever with empty collection 😀这个是罪魁祸首，导致每次都重新添加记忆库
+        # try:
+        #     # First try to reset the collection if it exists
+        #     temp_retriever = ChromaRetriever(collection_name="memories",model_name=self.model_name)
+        #     temp_retriever.client.reset() #删除整个 ChromaDB collection + 清空底层数据库文件
+        # except Exception as e:
+        #     logger.warning(f"Could not reset ChromaDB collection: {e}")
             
         # Create a fresh retriever instance
-        self.retriever = ChromaRetriever(collection_name="memories",model_name=self.model_name)
+        #self.retriever = ChromaRetriever(collection_name="memories",model_name=self.model_name)
+
+        # ✅ 使用 PersistentChromaRetriever 并指定路径
+        # 这样数据会保存在项目目录下的 chroma_db 文件夹里
+        self.retriever = PersistentChromaRetriever(
+            directory=db_path,
+            collection_name="memories",
+            model_name=self.model_name,
+            extend=True  # 允许读取现有数据
+        )
         
         # Initialize LLM controller
         self.llm_controller = LLMController(llm_backend, llm_model, api_key)
@@ -155,7 +169,77 @@ class AgenticMemorySystem:
                                     "new_tags_neighborhood": [["tag_1",...,"tag_n"],...["tag_1",...,"tag_n"]],
                                 }}
                                 '''
-        
+        # 3. ✅ 核心修改：启动时，立即从硬盘加载旧数据到 self.memories
+        self._load_memories_from_storage()
+
+    def _load_memories_from_storage(self):
+        """
+        从 ChromaDB 恢复 MemoryNote 对象到 self.memories 字典中。
+        解决了重启后内存丢失导致无法 search 的问题。
+        """
+        try:
+            # 获取数据库中存储的所有数据
+            print("🔄 System Startup: Syncing memory from disk...")
+            all_data = self.retriever.collection.get()
+
+            # 如果数据库是空的，直接返回
+            if not all_data or not all_data['ids']:
+                print("ℹ️ No existing memories found.")
+                return
+
+            ids = all_data['ids']
+            documents = all_data['documents']
+            metadatas = all_data['metadatas']
+
+            count = 0
+            for i, doc_id in enumerate(ids):
+                # 获取对应的元数据和内容
+                content = documents[i]
+                meta = metadatas[i] if metadatas else {}
+
+                # 🛠️ 辅助函数：处理数据类型转换
+                # 因为 ChromaDB metadata 里存的都是字符串，我们需要把 "['tag1', 'tag2']" 变回 list
+                def safe_eval(val, default):
+                    if val is None: return default
+                    if isinstance(val, str):
+                        try:
+                            # 只有看起来像列表或字典的字符串才转换
+                            if val.strip().startswith('[') or val.strip().startswith('{'):
+                                return ast.literal_eval(val)
+                            return val  # 普通字符串直接返回
+                        except:
+                            return val  # 解析失败则按原样返回
+                    return val  # 已经是正确类型
+
+                # 重建 MemoryNote 对象
+                note = MemoryNote(
+                    id=doc_id,
+                    content=content,
+                    # 必须解析这些 List/Dict 字段
+                    keywords=safe_eval(meta.get('keywords'), []),
+                    tags=safe_eval(meta.get('tags'), []),
+                    links=safe_eval(meta.get('links'), []),
+                    evolution_history=safe_eval(meta.get('evolution_history'), []),
+
+                    # 简单字段直接取
+                    context=meta.get('context', 'General'),
+                    category=meta.get('category', 'Uncategorized'),
+                    timestamp=meta.get('timestamp', datetime.now().strftime("%Y%m%d%H%M")),
+                    last_accessed=meta.get('last_accessed', ''),
+                    retrieval_count=int(meta.get('retrieval_count', 0))
+                )
+
+                # ✅ 存入内存字典
+                self.memories[doc_id] = note
+                count += 1
+
+            print(f"✅ Successfully loaded {count} memories into RAM.")
+
+        except Exception as e:
+            logger.error(f"Error loading memories from storage: {e}")
+            print(f"❌ Critical Error: Failed to load memories. {e}")
+
+
     def analyze_content(self, content: str) -> Dict:            
         """Analyze content using LLM to extract semantic metadata.
         
@@ -480,6 +564,7 @@ class AgenticMemorySystem:
                     'context': memory.context,
                     'keywords': memory.keywords,
                     'tags': memory.tags,  # ✅ 添加这一行
+                    'timestamp':memory.timestamp,
                     'score': search_results['distances'][0][i]
                 })
         

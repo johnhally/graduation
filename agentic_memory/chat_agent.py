@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from typing import List, Dict, Any
 from agentic_memory.memory_system import AgenticMemorySystem
 
@@ -12,7 +13,7 @@ class MemoryChatBot:
         # 定义机器人的“人设”和指令
         self.system_prompt = """
         You are a personalized AI assistant with access to the user's long-term memory.
-
+        
         Your Goal:
         Answer the user's questions or engage in chat by utilizing the [Relevant Memories] provided below.
 
@@ -24,6 +25,13 @@ class MemoryChatBot:
         5. Combine multiple memory fragments to form a coherent answer if needed.
         """
 
+    def _get_time_context(self) -> str:
+        """获取当前时间并格式化，用于 Prompt"""
+        now = datetime.now()
+        weekday = now.strftime("%A")  # 星期几
+        date_str = now.strftime("%Y-%m-%d %H:%M")
+        return f"Current System Time: {date_str} ({weekday})"
+
     def _format_memories_for_prompt(self, relevant_memories: List[Dict[str, Any]]) -> str:
         """将检索到的记忆格式化为字符串，嵌入 Prompt"""
         if not relevant_memories:
@@ -32,12 +40,15 @@ class MemoryChatBot:
         formatted_text = "Found the following relevant memories:\n"
         for i, mem in enumerate(relevant_memories):
             # 你的 search 方法返回包含 content, timestamp, tags 等字段的字典
-            content = mem.get('content', '')
-            timestamp = mem.get('timestamp', 'Unknown Time')
-            tags = mem.get('tags', [])
-            score = mem.get('score', 0)
-
-            formatted_text += f"[{i + 1}] (Time: {timestamp}, Score: {score:.2f}) {content} [Tags: {', '.join(tags)}]\n"
+            formatted_text += (
+            f"- MEMORY_ID: {mem['id']}\n"
+            f"  TIME: {mem.get('timestamp','Unknown')}\n"
+            f"  SCORE: {mem.get('score',0):.3f}\n"
+            f"  CONTEXT: {mem.get('context','')}\n"
+            f"  CONTENT: {mem.get('content','')}\n"
+            f"  TAGS: {', '.join(mem.get('tags',[]))}\n"
+        )
+            print(formatted_text)
 
         return formatted_text
 
@@ -58,6 +69,7 @@ class MemoryChatBot:
 
         messages = [
             {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": self._get_time_context()}, #😀添加了时序
             {"role": "system", "content": f"[Relevant Memories Retrieved from Database]:\n{memory_context}"}
         ]
 

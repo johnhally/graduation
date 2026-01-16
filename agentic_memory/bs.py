@@ -1,7 +1,7 @@
 from openai import api_key
 
 from agentic_memory.memory_system import AgenticMemorySystem
-from chat_agent import MemoryChatBot
+from chat_bot import MemoryChatBot
 
 # Initialize the memory system with OpenAI 🚀
 memory_system = AgenticMemorySystem(
@@ -99,7 +99,7 @@ memory_id15 = memory_system.add_note(
 )
 
 
-# ========== Scene 2: Visiting grandfather in hospital (15 memories) ==========
+# # ========== Scene 2: Visiting grandfather in hospital (15 memories) ==========
 
 memory_id16 = memory_system.add_note(
     content="第一次去医院看望爷爷，病房里弥漫着消毒水的味道。"
@@ -222,33 +222,3 @@ while True:
         print(f"Error: {e}")
 
 
-
-
-###
-
-# # Enhanced Retrieval with Metadata 🔍
-# # The system now uses generated metadata for better semantic search
-# results = memory_system.search("artificial intelligence data processing", k=3)
-# for result in results:
-#     print(f"ID: {result['id']}")
-#     print(f"Content: {result['content']}")
-#     print(f"Context: {result['context']}")
-#     print(f"Keywords: {result['keywords']}")
-#     print(f"Tags: {result['tags']}")
-#     print(f"Relevance Score: {result.get('score', 'N/A')}")
-#     print("---")
-#
-#
-# # Update Memories 🔄
-# memory_system.update(memory_id1, content="Updated: Deep learning neural networks for pattern recognition")
-#
-# # Delete Memories ❌
-# memory_system.delete(memory_id3)
-#
-# # Memory Evolution 🧬
-# # The system automatically evolves memories by:
-# # 1. Using LLM to analyze content and generate semantic metadata
-# # 2. Finding relationships using enhanced ChromaDB embeddings (content + metadata)
-# # 3. Updating tags, context, and connections based on related memories
-# # 4. Creating semantic links between memories
-# # This happens automatically when adding or updating memories!
